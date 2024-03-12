@@ -1,0 +1,161 @@
+# fpu/deployments/Monitoring_and_Logging_Config.yml
+
+# Prometheus configuration for monitoring
+prometheus:
+  scrape_configs:
+    - job_name: 'fpu'
+      static_configs:
+        - targets: ['fpu-app:80']
+      metrics_path: '/metrics'
+
+# AlertManager configuration for alerting
+alertmanager:
+  route:
+    group_by: ['alertname']
+    receiver: 'email'
+  receivers:
+    - name: 'email'
+      email_configs:
+        - to: 'ops-team@example.com'
+          send_resolved: true
+
+# Grafana configuration for dashboards
+grafana:
+  datasources:
+    - name: Prometheus
+      type: prometheus
+      url: 'http://prometheus:9090'
+      access: proxy
+  dashboards:
+    - fpu_overview:
+        json: /path/to/dashboard/fpu_overview.json
+
+# Loki configuration for log aggregation
+loki:
+  schema_config:
+    configs:
+      - from: 2020-10-24
+        store: boltdb-shipper
+        object_store: filesystem
+        schema: v11
+        index:
+          prefix: index_
+          period: 24h
+  storage_config:
+    boltdb_shipper:
+      active_index_directory: /loki/index
+      cache_location: /loki/index_cache
+      cache_ttl: 24h
+      shared_store: filesystem
+    filesystem:
+      directory: /loki/chunks
+
+# Fluentd configuration for log forwarding
+fluentd:
+  sources:
+    - type: tail
+      path: /var/log/fpu/*.log
+      pos_file: /var/log/fpu/fpu.log.pos
+      tag: fpu.log
+  match:
+    - tag: fpu.log
+      @type: loki
+      url: http://loki:3100
+      extract_kubernetes_labels: true
+      remove_keys: host
+
+# Elasticsearch configuration for search and analytics
+elasticsearch:
+  clusterName: "fpu-logs"
+  nodeGroup: "logging"
+  replicas: 2
+  minimumMasterNodes: 1
+  volumeClaimTemplate:
+    accessModes: ["ReadWriteOnce"]
+    resources:
+      requests:
+        storage: 10Gi
+# fpu/deployments/Monitoring_and_Logging_Config.yml (continued)
+
+# Kibana configuration for Elasticsearch data visualization
+kibana:
+  elasticsearchUrl: "http://elasticsearch:9200"
+  server:
+    basePath: "/kibana"
+    rewriteBasePath: true
+  logging:
+    silent: false
+    quiet: false
+    verbose: true
+
+# Filebeat configuration for log collection
+filebeat:
+  filebeat.inputs:
+    - type: log
+      enabled: true
+      paths:
+        - /var/log/fpu/*.log
+  output.elasticsearch:
+    hosts: ["elasticsearch:9200"]
+
+# Prometheus Alert Rules
+prometheus_rules:
+  groups:
+    - name: fpu_alerts
+      rules:
+        - alert: HighErrorRate
+          expr: rate(http_requests_total{status=~"5.."}[5m]) > 0.05
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: High error rate detected in FPU application
+            description: "FPU application is experiencing a high error rate of 5xx responses."
+
+        - alert: HighLatency
+          expr: histogram_quantile(0.9, rate(http_request_duration_seconds_bucket[10m])) > 1
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: High latency detected in FPU application
+            description: "FPU application is experiencing high latency, with 90% of requests taking longer than 1 second."
+
+# Zipkin configuration for distributed tracing
+zipkin:
+  storageType: mem
+  query:
+    port: 9411
+  ui:
+    port: 9412
+
+# Vector configuration for observability data pipeline
+vector:
+  sources:
+    file_logs:
+      type: "file"
+      include: ["/var/log/fpu/*.log"]
+      ignore_older: 72h
+
+  transforms:
+    log_parser:
+      type: "logfmt"
+      inputs: ["file_logs"]
+
+  sinks:
+    to_loki:
+      type: "loki"
+      inputs: ["log_parser"]
+      endpoint: "http://loki:3100"
+      labels:
+        host: "${VECTOR_HOSTNAME}"
+
+# Thanos configuration for long-term Prometheus storage
+thanos:
+  objectStorageConfig:
+    type: S3
+    config:
+      bucket: "fpu-metrics"
+      endpoint: "s3.example.com"
+      access_key: "your-access-key"
+      secret_key: "your-secret-key"
